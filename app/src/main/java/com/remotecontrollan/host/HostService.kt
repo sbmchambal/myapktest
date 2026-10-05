@@ -12,7 +12,9 @@ import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Binder
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.remotecontrollan.MainActivity
 import com.remotecontrollan.R
@@ -54,6 +56,7 @@ class HostService : Service() {
     private var screenRecorder: ScreenRecorder? = null
     private var discoveryBroadcaster: HostDiscoveryBroadcaster? = null
     private var mediaProjection: MediaProjection? = null
+    private var projectionCallback: MediaProjection.Callback? = null
 
     private val _isHostRunning = MutableStateFlow(false)
     val isHostRunning: StateFlow<Boolean> = _isHostRunning.asStateFlow()
@@ -120,10 +123,30 @@ class HostService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 val resultCode = intent.getIntExtra("EXTRA_RESULT_CODE", -1)
-                val data = intent.getParcelableExtra<Intent>("EXTRA_DATA")
+                val data = try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra("EXTRA_DATA", Intent::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra<Intent>("EXTRA_DATA")
+                    }
+                } catch (e: Exception) {
+                    AppLogger.e("HostService", "Failed to extract EXTRA_DATA: ${e.message}", e)
+                    null
+                }
+
                 if (resultCode != -1 && data != null) {
-                    startForegroundServiceWithNotification()
-                    startHostSubsystems(resultCode, data)
+                    // Start foreground service first before obtaining MediaProjection (mandated on Android 14+ / SDK 35)
+                    val fgSuccess = startForegroundServiceWithNotification()
+                    if (fgSuccess) {
+                        startHostSubsystems(resultCode, data)
+                    } else {
+                        AppLogger.e("HostService", "Failed to start foreground service. Aborting host start.")
+                        stopSelf()
+                    }
+                } else {
+                    AppLogger.e("HostService", "Invalid resultCode ($resultCode) or null intent data for ACTION_START")
+                    stopSelf()
                 }
             }
             ACTION_STOP -> {
@@ -137,23 +160,79 @@ class HostService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startForegroundServiceWithNotification() {
-        val notification = buildNotification("Host Active - Waiting for controller")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+    private fun startForegroundServiceWithNotification(): Boolean {
+        return try {
+            val notification = buildNotification("Host Active - Waiting for controller")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Use ONLY ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+            AppLogger.i("HostService", "Foreground service started with FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION")
+            true
+        } catch (e: Exception) {
+            AppLogger.e("HostService", "Failed to start foreground service: ${e.message}", e)
+            false
         }
     }
 
     private fun startHostSubsystems(resultCode: Int, data: Intent) {
-        val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val mp = mpManager.getMediaProjection(resultCode, data)
+        val mpManager = try {
+            getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
+        } catch (e: Exception) {
+            AppLogger.e("HostService", "Failed to get MediaProjectionManager: ${e.message}", e)
+            null
+        }
+
+        if (mpManager == null) {
+            AppLogger.e("HostService", "MediaProjectionManager is unavailable on this device")
+            stopHost()
+            stopSelf()
+            return
+        }
+
+        val mp = try {
+            mpManager.getMediaProjection(resultCode, data)
+        } catch (e: Exception) {
+            AppLogger.e("HostService", "Exception while calling getMediaProjection(): ${e.message}", e)
+            null
+        }
+
+        if (mp == null) {
+            AppLogger.e("HostService", "getMediaProjection() returned null - screen capture consent revoked or unavailable")
+            stopHost()
+            stopSelf()
+            return
+        }
         mediaProjection = mp
+
+        // Register MediaProjection.Callback (Mandatory on Android 14+ / targetSdk 35 before VirtualDisplay)
+        val callback = object : MediaProjection.Callback() {
+            override fun onStop() {
+                super.onStop()
+                AppLogger.i("HostService", "MediaProjection session terminated by system or user")
+                stopHost()
+                stopSelf()
+            }
+        }
+
+        try {
+            mp.registerCallback(callback, Handler(Looper.getMainLooper()))
+            projectionCallback = callback
+            AppLogger.i("HostService", "MediaProjection.Callback registered successfully")
+        } catch (e: Exception) {
+            AppLogger.e("HostService", "Failed to register MediaProjection.Callback: ${e.message}", e)
+            try { mp.stop() } catch (ignored: Exception) {}
+            mediaProjection = null
+            stopHost()
+            stopSelf()
+            return
+        }
 
         // Screen encoder
         val encoder = ScreenEncoder(serviceScope) { frameBytes ->
@@ -162,21 +241,52 @@ class HostService : Service() {
         screenEncoder = encoder
 
         val streamProfile = StreamProfile()
-        val surface = encoder.prepare(streamProfile)
-
-        if (surface != null && mp != null) {
-            val capture = ScreenCapture(this, mp)
-            capture.start(surface, streamProfile)
-            screenCapture = capture
+        val surface = try {
+            encoder.prepare(streamProfile)
+        } catch (e: Exception) {
+            AppLogger.e("HostService", "ScreenEncoder initialization failed: ${e.message}", e)
+            null
         }
 
-        // Screen recorder
-        if (mp != null) {
+        if (surface == null) {
+            AppLogger.e("HostService", "Failed to prepare encoder surface for screen capture")
+            stopHost()
+            stopSelf()
+            return
+        }
+
+        val capture = ScreenCapture(this, mp)
+        val captureSuccess = try {
+            capture.start(surface, streamProfile)
+        } catch (e: Exception) {
+            AppLogger.e("HostService", "ScreenCapture start failed: ${e.message}", e)
+            false
+        }
+
+        if (!captureSuccess) {
+            AppLogger.e("HostService", "Failed to create VirtualDisplay for screen capture")
+            stopHost()
+            stopSelf()
+            return
+        }
+        screenCapture = capture
+
+        // Screen recorder (optional)
+        try {
             screenRecorder = ScreenRecorder(this, mp)
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Optional ScreenRecorder initialization skipped: ${e.message}")
         }
 
         // Start embedded server
-        hostServer.start()
+        try {
+            hostServer.start()
+        } catch (e: Exception) {
+            AppLogger.e("HostService", "Failed to start HostServer: ${e.message}", e)
+            stopHost()
+            stopSelf()
+            return
+        }
 
         // Refresh device info
         val rootStatus = RootEngine.checkRootStatus()
@@ -193,42 +303,83 @@ class HostService : Service() {
         _hostDeviceInfo.value = info
 
         // Start UDP discovery broadcaster
-        discoveryBroadcaster = HostDiscoveryBroadcaster(
-            scope = serviceScope,
-            hostId = pairingManager.generateQrPayload(info.ipAddress, info.port, info.deviceName),
-            deviceName = info.deviceName,
-            model = info.model,
-            isRooted = rootStatus == RootStatus.DETECTED,
-            port = info.port
-        )
-        discoveryBroadcaster?.start()
+        try {
+            discoveryBroadcaster = HostDiscoveryBroadcaster(
+                scope = serviceScope,
+                hostId = pairingManager.generateQrPayload(info.ipAddress, info.port, info.deviceName),
+                deviceName = info.deviceName,
+                model = info.model,
+                isRooted = rootStatus == RootStatus.DETECTED,
+                port = info.port
+            )
+            discoveryBroadcaster?.start()
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Discovery broadcaster failed to start: ${e.message}")
+        }
 
         _isHostRunning.value = true
         AppLogger.i("HostService", "HostService fully active on ${info.ipAddress}:${info.port}")
     }
 
     fun stopHost() {
-        discoveryBroadcaster?.stop()
+        try {
+            discoveryBroadcaster?.stop()
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error stopping discovery broadcaster: ${e.message}")
+        }
         discoveryBroadcaster = null
 
-        screenCapture?.stop()
+        try {
+            screenCapture?.stop()
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error stopping screen capture: ${e.message}")
+        }
         screenCapture = null
 
-        screenEncoder?.stop()
+        try {
+            screenEncoder?.stop()
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error stopping screen encoder: ${e.message}")
+        }
         screenEncoder = null
 
-        screenRecorder?.stopRecording()
+        try {
+            screenRecorder?.stopRecording()
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error stopping screen recorder: ${e.message}")
+        }
         screenRecorder = null
 
         try {
+            projectionCallback?.let {
+                mediaProjection?.unregisterCallback(it)
+            }
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error unregistering projection callback: ${e.message}")
+        }
+        projectionCallback = null
+
+        try {
             mediaProjection?.stop()
-        } catch (ignored: Exception) {}
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error stopping MediaProjection: ${e.message}")
+        }
         mediaProjection = null
 
-        hostServer.stop()
+        try {
+            hostServer.stop()
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error stopping HostServer: ${e.message}")
+        }
+
         _isHostRunning.value = false
-        AppLogger.i("HostService", "HostService stopped")
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        AppLogger.i("HostService", "HostService stopped cleanly")
+
+        try {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } catch (e: Exception) {
+            AppLogger.w("HostService", "Error stopping foreground service: ${e.message}")
+        }
     }
 
     fun regeneratePairingPin(): String {

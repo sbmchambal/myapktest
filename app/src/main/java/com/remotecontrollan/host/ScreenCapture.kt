@@ -16,27 +16,35 @@ class ScreenCapture(
 ) {
     private var virtualDisplay: VirtualDisplay? = null
 
-    fun start(surface: Surface, profile: StreamProfile) {
+    fun start(surface: Surface, profile: StreamProfile): Boolean {
         stop()
 
-        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
         val metrics = DisplayMetrics()
-        windowManager.defaultDisplay.getRealMetrics(metrics)
+        windowManager?.defaultDisplay?.getRealMetrics(metrics)
+        val densityDpi = if (metrics.densityDpi > 0) metrics.densityDpi else DisplayMetrics.DENSITY_HIGH
 
-        try {
+        return try {
             virtualDisplay = mediaProjection.createVirtualDisplay(
                 "RemoteControlLAN-Display",
                 profile.width,
                 profile.height,
-                metrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR or DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC,
+                densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 surface,
                 null,
                 null
             )
-            AppLogger.i("ScreenCapture", "VirtualDisplay created: ${profile.width}x${profile.height}")
+            val success = virtualDisplay != null
+            if (success) {
+                AppLogger.i("ScreenCapture", "VirtualDisplay created: ${profile.width}x${profile.height} @ ${densityDpi}dpi")
+            } else {
+                AppLogger.e("ScreenCapture", "createVirtualDisplay returned null")
+            }
+            success
         } catch (e: Exception) {
             AppLogger.e("ScreenCapture", "Failed to create VirtualDisplay: ${e.message}", e)
+            false
         }
     }
 

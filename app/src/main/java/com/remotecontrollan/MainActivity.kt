@@ -77,12 +77,13 @@ class MainActivity : ComponentActivity() {
                 putExtra("EXTRA_RESULT_CODE", result.resultCode)
                 putExtra("EXTRA_DATA", result.data)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
+            try {
+                ContextCompat.startForegroundService(this, serviceIntent)
+                AppLogger.i("MainActivity", "MediaProjection granted, started HostService")
+            } catch (e: Exception) {
+                AppLogger.e("MainActivity", "Failed to start HostService: ${e.message}", e)
+                Toast.makeText(this, "Failed to start HostService: ${e.message}", Toast.LENGTH_LONG).show()
             }
-            AppLogger.i("MainActivity", "MediaProjection granted, started HostService")
         } else {
             Toast.makeText(this, "Screen capture permission is required for Host Mode", Toast.LENGTH_LONG).show()
         }
