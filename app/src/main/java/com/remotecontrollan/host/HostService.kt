@@ -91,6 +91,7 @@ class HostService : Service() {
         const val ACTION_DISCONNECT_ALL = "ACTION_DISCONNECT_ALL"
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_DATA = "EXTRA_DATA"
+        const val EXTRA_PROJECTION_DATA = "EXTRA_PROJECTION_DATA"
 
         const val NOTIFICATION_CHANNEL_ID = "remote_control_lan_channel"
         const val NOTIFICATION_ID = 1001
@@ -115,9 +116,34 @@ class HostService : Service() {
     override fun onCreate() {
         super.onCreate()
         activeServiceInstance = this
-        createNotificationChannel()
-        AppLogger.i("Host", "[Host] service created")
 
+        // 1. Create notification channel
+        createNotificationChannel()
+
+        // 2. Create the foreground notification
+        val notification = buildNotification("Host Active - Screen streaming service")
+
+        // 3. Promote service to foreground IMMEDIATELY to prevent ForegroundServiceDidNotStartInTimeException
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } else {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification
+                )
+            }
+            AppLogger.i("Host", "[Host] service created")
+            AppLogger.i("Host", "[Host] startForeground complete")
+        } catch (e: Exception) {
+            AppLogger.e("Host", "[Host] Failed calling startForeground in onCreate: ${e.message}", e)
+        }
+
+        // 4. Initialize local manager subsystems after entering foreground
         pairingManager = PairingManager(this)
         inputEngine = InputEngine(this)
         fileManager = FileManager(this)
@@ -151,41 +177,43 @@ class HostService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                // The service is already running as a foreground service at this point.
                 var resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
-                var data = try {
+                var projectionData = try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+                        intent.getParcelableExtra(EXTRA_PROJECTION_DATA, Intent::class.java)
+                            ?: intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
                     } else {
                         @Suppress("DEPRECATION")
-                        intent.getParcelableExtra<Intent>(EXTRA_DATA)
+                        (intent.getParcelableExtra<Intent>(EXTRA_PROJECTION_DATA)
+                            ?: intent.getParcelableExtra<Intent>(EXTRA_DATA))
                     }
                 } catch (e: Exception) {
-                    AppLogger.w("Host", "Failed to extract EXTRA_DATA from intent: ${e.message}")
+                    AppLogger.w("Host", "Failed to extract projection data from intent: ${e.message}")
                     null
                 }
 
-                if (resultCode == -1 || data == null) {
+                if (resultCode == -1 || projectionData == null) {
                     if (pendingResultCode != -1 && pendingResultData != null) {
                         resultCode = pendingResultCode
-                        data = pendingResultData
+                        projectionData = pendingResultData
                         AppLogger.i("Host", "Retrieved projection credentials from pending memory handoff")
                     }
                 }
 
-                if (resultCode != -1 && data != null) {
-                    // Call startForeground() immediately upon service startup
-                    val fgSuccess = startForegroundServiceWithNotification()
-                    if (fgSuccess) {
-                        startHostSubsystems(resultCode, data)
-                    } else {
-                        setFailureState("Failed to start foreground service")
-                        stopSelf()
-                    }
-                } else {
+                if (resultCode == -1 || projectionData == null) {
                     AppLogger.e("Host", "Invalid resultCode ($resultCode) or null intent data for ACTION_START")
                     setFailureState("Screen recording permission data was not received")
                     stopSelf()
+                    return START_NOT_STICKY
                 }
+
+                // Start MediaProjection and the remaining Host subsystems asynchronously here
+                serviceScope.launch(Dispatchers.Main) {
+                    startHostSubsystems(resultCode, projectionData)
+                }
+
+                return START_STICKY
             }
             ACTION_STOP -> {
                 stopHost()
@@ -196,27 +224,6 @@ class HostService : Service() {
             }
         }
         return START_NOT_STICKY
-    }
-
-    private fun startForegroundServiceWithNotification(): Boolean {
-        return try {
-            val notification = buildNotification("Host Active - Waiting for controller")
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // Use ONLY ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
-            AppLogger.i("Host", "[Host] startForeground complete")
-            true
-        } catch (e: Exception) {
-            AppLogger.e("Host", "[Host] Failed to start foreground service: ${e.message}", e)
-            false
-        }
     }
 
     private fun startHostSubsystems(resultCode: Int, data: Intent) {

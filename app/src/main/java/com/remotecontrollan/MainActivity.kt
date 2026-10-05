@@ -82,6 +82,7 @@ class MainActivity : ComponentActivity() {
                 action = HostService.ACTION_START
                 putExtra(HostService.EXTRA_RESULT_CODE, resultCode)
                 putExtra(HostService.EXTRA_DATA, projectionData)
+                putExtra(HostService.EXTRA_PROJECTION_DATA, projectionData)
             }
             AppLogger.i("Host", "[Host] starting service")
             try {

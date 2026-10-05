@@ -122,6 +122,35 @@ class MainActivity : ComponentActivity() {
     // ... UI routes to HostScreen or ControllerScreen based on appMode
 }`
     },
+    'app/src/main/java/com/remotecontrollan/host/HostService.kt': {
+      desc: 'Foreground Service with Immediate startForeground() in onCreate()',
+      code: `package com.remotecontrollan.host
+
+import android.app.Service
+import android.content.pm.ServiceInfo
+import android.os.Build
+
+class HostService : Service() {
+    override fun onCreate() {
+        super.onCreate()
+        activeServiceInstance = this
+        createNotificationChannel()
+
+        val notification = buildNotification("Host Active - Screen streaming service")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+        // Subsystems initialized after entering foreground
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Service already foreground. Obtains MediaProjection & starts encoder asynchronously.
+        return START_STICKY
+    }
+}`
+    },
     'app/src/main/java/com/remotecontrollan/host/RootEngine.kt': {
       desc: 'Controlled Allowlisted Root Engine for Tap, Swipe, Keys, and Apps',
       code: `package com.remotecontrollan.host
