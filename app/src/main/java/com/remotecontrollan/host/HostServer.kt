@@ -68,11 +68,18 @@ class HostServer(
     private val _activeControllerName = MutableStateFlow<String?>("None")
     val activeControllerName: StateFlow<String?> = _activeControllerName.asStateFlow()
 
-    fun start() {
-        if (engine != null) return
+    fun start(): Boolean {
+        if (engine != null) return true
 
-        try {
-            engine = embeddedServer(CIO, port = port) {
+        val localIp = NetworkUtils.getLocalIpAddress()
+        AppLogger.i("HostServer", "SERVER_START_BEGIN host=0.0.0.0 port=$port localIp=$localIp")
+
+        return try {
+            val server = embeddedServer(
+                factory = CIO,
+                host = "0.0.0.0",
+                port = port
+            ) {
                 install(WebSockets) {
                     pingPeriodMillis = 5000
                     timeoutMillis = 15000
@@ -82,6 +89,16 @@ class HostServer(
                 }
 
                 routing {
+                    // Explicit HTTP Health Check endpoint (unauthenticated)
+                    get("/health") {
+                        val resp = JSONObject().apply {
+                            put("status", "ok")
+                            put("service", "RemoteControlLAN")
+                            put("port", port)
+                        }
+                        call.respondText(resp.toString(), ContentType.Application.Json, HttpStatusCode.OK)
+                    }
+
                     // WebSocket real-time control & screen streaming
                     webSocket("/control") {
                         handleWebSocketSession(this)
@@ -194,11 +211,19 @@ class HostServer(
                         call.respondText(JSONObject().put("success", success).toString(), ContentType.Application.Json)
                     }
                 }
-            }.start(wait = false)
-
-            AppLogger.i("HostServer", "HostServer running on port $port")
+            server.start(wait = false)
+            engine = server
+            AppLogger.i("HostServer", "SERVER_START_SUCCESS port=$port")
+            true
         } catch (e: Exception) {
-            AppLogger.e("HostServer", "Failed to start HostServer: ${e.message}", e)
+            val exceptionClass = e.javaClass.name
+            val message = e.message ?: "Unknown error"
+            AppLogger.e("HostServer", "HostServer failed to start on $localIp:$port [class=$exceptionClass, message=$message]", e)
+            if (e is java.net.BindException || (e.cause is java.net.BindException)) {
+                AppLogger.e("HostServer", "Port $port is already in use by another process or previous instance")
+            }
+            engine = null
+            false
         }
     }
 

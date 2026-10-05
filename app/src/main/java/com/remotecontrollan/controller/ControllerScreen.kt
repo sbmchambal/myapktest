@@ -46,6 +46,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -75,7 +76,9 @@ import com.remotecontrollan.model.TransportType
 import com.remotecontrollan.network.ControlMessage
 import com.remotecontrollan.network.ControllerDiscoveryScanner
 import com.remotecontrollan.network.WebSocketManager
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -100,6 +103,9 @@ fun ControllerScreen(
 
     var showManualIpDialog by remember { mutableStateOf(false) }
     var manualIp by remember { mutableStateOf("192.168.43.1") }
+    var manualPort by remember { mutableStateOf("8887") }
+    var testStatus by remember { mutableStateOf<String?>(null) }
+    var isTestingConnection by remember { mutableStateOf(false) }
 
     var showKeyboardDialog by remember { mutableStateOf(false) }
     var showFileManager by remember { mutableStateOf(false) }
@@ -433,45 +439,116 @@ fun ControllerScreen(
         )
     }
 
-    // Manual IP Entry Dialog
+    // Manual IP Entry Dialog with Health Test
     if (showManualIpDialog) {
         AlertDialog(
-            onDismissRequest = { showManualIpDialog = false },
+            onDismissRequest = {
+                showManualIpDialog = false
+                testStatus = null
+            },
             title = { Text("Connect to Manual IP") },
             text = {
                 Column {
-                    Text("Enter Host IP address (e.g. 192.168.43.1):", fontSize = 12.sp, color = Color.Gray)
+                    Text("Enter Host IP and Port:", fontSize = 12.sp, color = Color.Gray)
                     OutlinedTextField(
                         value = manualIp,
-                        onValueChange = { manualIp = it },
-                        label = { Text("IP Address") },
+                        onValueChange = {
+                            manualIp = it
+                            testStatus = null
+                        },
+                        label = { Text("IP Address (e.g. 192.168.43.1)") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
                     )
+                    OutlinedTextField(
+                        value = manualPort,
+                        onValueChange = {
+                            manualPort = it
+                            testStatus = null
+                        },
+                        label = { Text("Port (default 8887)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = {
+                            val ip = manualIp.trim()
+                            val port = manualPort.trim().toIntOrNull() ?: 8887
+                            scope.launch {
+                                isTestingConnection = true
+                                testStatus = "Testing http://$ip:$port/health..."
+                                val (reachable, msg) = withContext(Dispatchers.IO) {
+                                    try {
+                                        val url = java.net.URL("http://$ip:$port/health")
+                                        val conn = url.openConnection() as java.net.HttpURLConnection
+                                        conn.connectTimeout = 3000
+                                        conn.readTimeout = 3000
+                                        conn.requestMethod = "GET"
+                                        val responseCode = conn.responseCode
+                                        if (responseCode == 200) {
+                                            true to "Host reachable"
+                                        } else {
+                                            false to "Host unreachable (HTTP $responseCode)"
+                                        }
+                                    } catch (e: Exception) {
+                                        false to "Host unreachable (${e.message ?: e.javaClass.simpleName})"
+                                    }
+                                }
+                                testStatus = msg
+                                isTestingConnection = false
+                            }
+                        },
+                        enabled = !isTestingConnection && manualIp.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (isTestingConnection) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
+                        Text("TEST CONNECTION (GET /health)")
+                    }
+
+                    if (testStatus != null) {
+                        Text(
+                            text = testStatus!!,
+                            color = if (testStatus!!.startsWith("Host reachable")) Color(0xFF10B981) else Color(0xFFEF4444),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
                 }
             },
             confirmButton = {
                 Button(onClick = {
                     showManualIpDialog = false
-                    if (manualIp.isNotBlank()) {
-                        discoveryScanner.addManualHost(manualIp.trim(), 8887, "Host ($manualIp)")
+                    val ip = manualIp.trim()
+                    val port = manualPort.trim().toIntOrNull() ?: 8887
+                    if (ip.isNotBlank()) {
+                        discoveryScanner.addManualHost(ip, port, "Host ($ip)")
                         val host = DiscoveredHost(
-                            hostId = "manual_$manualIp",
-                            deviceName = "Host ($manualIp)",
-                            model = "Redmi Note 10",
-                            ipAddress = manualIp.trim(),
-                            port = 8887,
+                            hostId = "manual_$ip",
+                            deviceName = "Host ($ip)",
+                            model = "Host Device",
+                            ipAddress = ip,
+                            port = port,
                             isRooted = true
                         )
                         selectedHost = host
-                        wsManager.connect(manualIp.trim(), 8887, host.hostId)
+                        wsManager.connect(ip, port, host.hostId)
                     }
                 }) {
                     Text("Connect")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showManualIpDialog = false }) {
+                TextButton(onClick = {
+                    showManualIpDialog = false
+                    testStatus = null
+                }) {
                     Text("Cancel")
                 }
             }

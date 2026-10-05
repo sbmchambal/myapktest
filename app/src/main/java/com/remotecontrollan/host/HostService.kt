@@ -227,116 +227,75 @@ class HostService : Service() {
     }
 
     private fun startHostSubsystems(resultCode: Int, data: Intent) {
-        AppLogger.i("Host", "[Host] obtaining MediaProjection")
+        AppLogger.i("Host", "HOST_START_BEGIN")
+        val localIp = NetworkUtils.getLocalIpAddress()
+
+        // 1. Validate and obtain MediaProjection
         val mpManager = try {
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as? MediaProjectionManager
         } catch (e: Exception) {
-            AppLogger.e("Host", "[Host] Exception getting MediaProjectionManager: ${e.message}", e)
+            AppLogger.e("Host", "Exception getting MediaProjectionManager [class=${e.javaClass.name}, msg=${e.message}]", e)
             null
         }
 
         if (mpManager == null) {
-            AppLogger.e("Host", "[Host] MediaProjectionManager is unavailable on this device")
+            AppLogger.e("Host", "MediaProjectionManager is unavailable on this device")
             setFailureState("MediaProjectionManager is unavailable on this device")
-            stopHost()
-            stopSelf()
             return
         }
 
         val mp = try {
             mpManager.getMediaProjection(resultCode, data)
         } catch (e: Exception) {
-            AppLogger.e("Host", "[Host] Exception while calling getMediaProjection(): ${e.message}", e)
+            AppLogger.e("Host", "Exception while calling getMediaProjection() [class=${e.javaClass.name}, msg=${e.message}]", e)
             null
         }
 
         if (mp == null) {
-            AppLogger.e("Host", "[Host] MediaProjection obtained: NULL")
+            AppLogger.e("Host", "MediaProjection is NULL - user cancelled or permission revoked")
             setFailureState("MediaProjection returned null - user consent may have expired or failed")
-            stopHost()
-            stopSelf()
             return
         }
         mediaProjection = mp
-        AppLogger.i("Host", "[Host] MediaProjection obtained")
+        AppLogger.i("Host", "MEDIA_PROJECTION_OK")
 
-        // Register MediaProjection.Callback BEFORE creating VirtualDisplay (strictly required)
-        val callback = object : MediaProjection.Callback() {
-            override fun onStop() {
-                super.onStop()
-                AppLogger.i("Host", "[Host] MediaProjection session terminated by system or user")
-                stopHost()
-                stopSelf()
-            }
-        }
-
+        // Register MediaProjection.Callback
         try {
+            val callback = object : MediaProjection.Callback() {
+                override fun onStop() {
+                    super.onStop()
+                    AppLogger.w("Host", "MediaProjection session terminated by system or user")
+                    try { screenCapture?.stop() } catch (ignored: Exception) {}
+                    screenCapture = null
+                    try { screenEncoder?.stop() } catch (ignored: Exception) {}
+                    screenEncoder = null
+                }
+            }
             mp.registerCallback(callback, Handler(Looper.getMainLooper()))
             projectionCallback = callback
-            AppLogger.i("Host", "[Host] MediaProjection.Callback registered successfully")
         } catch (e: Exception) {
-            AppLogger.e("Host", "[Host] Failed to register MediaProjection.Callback: ${e.message}", e)
-            setFailureState("Failed to register MediaProjection.Callback: ${e.message}")
-            try { mp.stop() } catch (ignored: Exception) {}
-            mediaProjection = null
-            stopHost()
-            stopSelf()
-            return
+            AppLogger.e("Host", "Failed to register MediaProjection.Callback [class=${e.javaClass.name}, msg=${e.message}]", e)
         }
 
-        // Screen encoder
-        AppLogger.i("Host", "[Host] creating encoder")
-        val encoder = ScreenEncoder(serviceScope) { frameBytes ->
-            hostServer.sendEncodedFrame(frameBytes)
-        }
-        screenEncoder = encoder
-
-        val streamProfile = StreamProfile()
-        val surface = try {
-            encoder.prepare(streamProfile)
+        // 2. START HOST SERVER FIRST
+        AppLogger.i("Host", "SERVER_START_BEGIN")
+        val serverStarted = try {
+            hostServer.start()
         } catch (e: Exception) {
-            AppLogger.e("Host", "[Host] ScreenEncoder initialization failed: ${e.message}", e)
-            null
-        }
-
-        if (surface == null) {
-            AppLogger.e("Host", "[Host] Failed to prepare encoder surface for screen capture")
-            setFailureState("Failed to prepare hardware video encoder surface")
-            stopHost()
-            stopSelf()
-            return
-        }
-        AppLogger.i("Host", "[Host] encoder created")
-
-        AppLogger.i("Host", "[Host] creating VirtualDisplay")
-        val capture = ScreenCapture(this, mp)
-        val captureSuccess = try {
-            capture.start(surface, streamProfile)
-        } catch (e: Exception) {
-            AppLogger.e("Host", "[Host] ScreenCapture start failed: ${e.message}", e)
+            AppLogger.e("Host", "Exception while starting HostServer [class=${e.javaClass.name}, msg=${e.message}, port=8887, localIp=$localIp]", e)
             false
         }
 
-        if (!captureSuccess) {
-            AppLogger.e("Host", "[Host] Failed to create VirtualDisplay for screen capture")
-            setFailureState("Failed to create VirtualDisplay for screen capture")
-            stopHost()
-            stopSelf()
+        if (!serverStarted) {
+            AppLogger.e("Host", "HostServer failed to start on $localIp:8887")
+            setFailureState("HostServer failed to start on $localIp:8887")
             return
         }
-        screenCapture = capture
-        AppLogger.i("Host", "[Host] VirtualDisplay created")
+        AppLogger.i("Host", "SERVER_START_SUCCESS port=8887")
 
-        // Start embedded server
-        try {
-            hostServer.start()
-        } catch (e: Exception) {
-            AppLogger.e("Host", "[Host] Failed to start HostServer: ${e.message}", e)
-            setFailureState("Failed to start HostServer: ${e.message}")
-            stopHost()
-            stopSelf()
-            return
-        }
+        // 3. Mark Host state to RUNNING immediately so the dashboard updates and Controller can connect
+        _isHostRunning.value = true
+        _hostError.value = null
 
         // Refresh device info
         val rootStatus = RootEngine.checkRootStatus()
@@ -345,14 +304,62 @@ class HostService : Service() {
             model = Build.MODEL,
             androidVersion = "Android ${Build.VERSION.RELEASE}",
             rootStatus = rootStatus,
-            ipAddress = NetworkUtils.getLocalIpAddress(),
+            ipAddress = localIp,
             port = NetworkUtils.DEFAULT_WEBSOCKET_PORT,
             isHotspotActive = NetworkUtils.isHotspotInterfaceActive(),
             transport = TransportType.WIFI
         )
         _hostDeviceInfo.value = info
+        updateNotification()
 
-        // Start UDP discovery broadcaster
+        // 4. Start Screen Encoder (Do NOT stop host if this fails; keep server alive)
+        AppLogger.i("Host", "SCREEN_ENCODER_BEGIN")
+        var encoderSurface: Surface? = null
+        try {
+            val encoder = ScreenEncoder(serviceScope) { frameBytes ->
+                hostServer.sendEncodedFrame(frameBytes)
+            }
+            screenEncoder = encoder
+
+            val streamProfile = StreamProfile()
+            encoderSurface = encoder.prepare(streamProfile)
+            if (encoderSurface != null) {
+                AppLogger.i("Host", "SCREEN_ENCODER_SUCCESS")
+            } else {
+                AppLogger.e("Host", "ScreenEncoder prepare returned null surface")
+                setFailureState("Hardware video encoder unavailable (server remains online)")
+            }
+        } catch (e: Exception) {
+            AppLogger.e("Host", "ScreenEncoder initialization failed [class=${e.javaClass.name}, msg=${e.message}]", e)
+            setFailureState("ScreenEncoder failed: ${e.message} (server remains online)")
+        }
+
+        // 5. Start VirtualDisplay Screen Capture (Do NOT stop host if this fails; keep server alive)
+        if (encoderSurface != null) {
+            try {
+                val capture = ScreenCapture(this, mp)
+                val captureSuccess = capture.start(encoderSurface, StreamProfile())
+                if (captureSuccess) {
+                    screenCapture = capture
+                    AppLogger.i("Host", "SCREEN_CAPTURE_SUCCESS")
+                } else {
+                    AppLogger.e("Host", "ScreenCapture start failed")
+                    setFailureState("VirtualDisplay creation failed (server remains online)")
+                }
+            } catch (e: Exception) {
+                AppLogger.e("Host", "ScreenCapture start failed [class=${e.javaClass.name}, msg=${e.message}]", e)
+                setFailureState("ScreenCapture failed: ${e.message} (server remains online)")
+            }
+        }
+
+        // Screen recorder (optional)
+        try {
+            screenRecorder = ScreenRecorder(this, mp)
+        } catch (e: Exception) {
+            AppLogger.w("Host", "Optional ScreenRecorder initialization skipped: ${e.message}")
+        }
+
+        // 6. Start UDP discovery broadcaster
         try {
             discoveryBroadcaster = HostDiscoveryBroadcaster(
                 scope = serviceScope,
@@ -363,14 +370,13 @@ class HostService : Service() {
                 port = info.port
             )
             discoveryBroadcaster?.start()
+            AppLogger.i("Host", "DISCOVERY_STARTED")
         } catch (e: Exception) {
-            AppLogger.w("Host", "[Host] Discovery broadcaster failed to start: ${e.message}")
+            AppLogger.w("Host", "Discovery broadcaster failed to start: ${e.message}")
         }
 
-        _isHostRunning.value = true
-        _hostError.value = null
         clearPendingProjectionData()
-        AppLogger.i("Host", "[Host] streaming started")
+        AppLogger.i("Host", "HOST_START_COMPLETE")
     }
 
     fun stopHost() {
