@@ -97,16 +97,18 @@ class UsbTransport(
         return@withContext false
     }
 
-    override suspend fun disconnect() = withContext(Dispatchers.IO) {
-        try {
-            fileInputStream?.close()
-            fileOutputStream?.close()
-        } catch (e: Exception) {
-            // ignore
-        } finally {
-            fileInputStream = null
-            fileOutputStream = null
-            _isConnected.value = false
+    override suspend fun disconnect() {
+        withContext(Dispatchers.IO) {
+            try {
+                fileInputStream?.close()
+                fileOutputStream?.close()
+            } catch (e: Exception) {
+                // ignore
+            } finally {
+                fileInputStream = null
+                fileOutputStream = null
+                _isConnected.value = false
+            }
         }
     }
 

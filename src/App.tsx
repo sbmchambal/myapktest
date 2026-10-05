@@ -208,24 +208,31 @@ class TouchController(
     }
 }`
     },
-    'app/src/main/java/com/remotecontrollan/network/Transport.kt': {
-      desc: 'Transport Abstraction Interface for Dual Wi-Fi & USB Connections',
-      code: `package com.remotecontrollan.network
+    'app/src/main/java/com/remotecontrollan/host/HostServer.kt': {
+      desc: 'Embedded Ktor HTTP & WebSocket Server with Authorized Command Dispatcher',
+      code: `package com.remotecontrollan.host
 
-import com.remotecontrollan.model.TransportType
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.StateFlow
+import io.ktor.server.cio.CIO
+import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.websocket.DefaultWebSocketServerSession
+import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.webSocket
+import io.ktor.websocket.Frame
+import io.ktor.websocket.send
 
-interface Transport {
-    val transportType: TransportType
-    val isConnected: StateFlow<Boolean>
-    val incomingMessages: Flow<ControlMessage>
-    val incomingFrames: Flow<ByteArray>
+class HostServer(...) {
+    private var engine: EmbeddedServer<*, *>? = null
+    private val activeSessions = CopyOnWriteArraySet<DefaultWebSocketServerSession>()
 
-    suspend fun connect(targetAddress: String, port: Int): Boolean
-    suspend fun disconnect()
-    suspend fun send(message: ControlMessage): Boolean
-    suspend fun sendRaw(data: ByteArray): Boolean
+    fun start() {
+        engine = embeddedServer(CIO, port = port) {
+            install(WebSockets) { pingPeriodMillis = 5000; timeoutMillis = 15000 }
+            routing {
+                webSocket("/control") { handleWebSocketSession(this) }
+            }
+        }.start(wait = false)
+    }
 }`
     },
     '.github/workflows/build-apk.yml': {
