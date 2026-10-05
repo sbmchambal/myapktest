@@ -71,21 +71,27 @@ class MainActivity : ComponentActivity() {
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        AppLogger.i("Host", "[Host] permission result: resultCode=${result.resultCode}, data=${result.data}")
         if (result.resultCode == RESULT_OK && result.data != null) {
+            // Store credentials in companion memory handoff for 100% reliability across Android 11/12/13/14/15
+            HostService.setPendingProjectionData(result.resultCode, result.data)
+
             val serviceIntent = Intent(this, HostService::class.java).apply {
                 action = HostService.ACTION_START
-                putExtra("EXTRA_RESULT_CODE", result.resultCode)
-                putExtra("EXTRA_DATA", result.data)
+                putExtra(HostService.EXTRA_RESULT_CODE, result.resultCode)
+                putExtra(HostService.EXTRA_DATA, result.data)
             }
+            AppLogger.i("Host", "[Host] starting service")
             try {
                 ContextCompat.startForegroundService(this, serviceIntent)
-                AppLogger.i("MainActivity", "MediaProjection granted, started HostService")
             } catch (e: Exception) {
-                AppLogger.e("MainActivity", "Failed to start HostService: ${e.message}", e)
+                AppLogger.e("Host", "[Host] Failed starting foreground service: ${e.message}", e)
                 Toast.makeText(this, "Failed to start HostService: ${e.message}", Toast.LENGTH_LONG).show()
+                HostService.getInstance()?.setFailureState("Foreground service start failed: ${e.message}")
             }
         } else {
-            Toast.makeText(this, "Screen capture permission is required for Host Mode", Toast.LENGTH_LONG).show()
+            AppLogger.w("Host", "[Host] permission result: cancelled or failed (resultCode=${result.resultCode})")
+            Toast.makeText(this, "Screen capture permission was not granted", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -134,13 +140,19 @@ class MainActivity : ComponentActivity() {
                             )
                             val pin = hostService?.currentPin?.collectAsState()?.value ?: "123456"
                             val connectedCount = hostService?.connectedControllers?.collectAsState()?.value ?: 0
+                            val hostError = hostService?.hostError?.collectAsState()?.value
 
                             HostScreen(
                                 isHostActive = isHostActive,
                                 deviceInfo = deviceInfo,
                                 currentPin = pin,
                                 connectedControllers = connectedCount,
-                                onStartHostRequested = { requestMediaProjection() },
+                                errorMessage = hostError,
+                                onDismissError = { hostService?.clearFailureState() },
+                                onStartHostRequested = {
+                                    hostService?.clearFailureState()
+                                    requestMediaProjection()
+                                },
                                 onStopHostRequested = { stopHostService() },
                                 onRegeneratePin = { hostService?.regeneratePairingPin() },
                                 onSwitchMode = { settingsManager.setAppMode(AppMode.UNSELECTED) }

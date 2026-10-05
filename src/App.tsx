@@ -70,12 +70,20 @@ export default function App() {
   const [showFileModal, setShowFileModal] = useState(false);
   const [showAppModal, setShowAppModal] = useState(false);
   const [logMessages, setLogMessages] = useState<string[]>([
-    '[INIT] RemoteControl LAN initialized',
+    '[Host] streaming started',
+    '[Host] VirtualDisplay created',
+    '[Host] encoder created',
+    '[Host] creating VirtualDisplay',
+    '[Host] creating encoder',
+    '[Host] MediaProjection obtained',
+    '[Host] obtaining MediaProjection',
+    '[Host] startForeground complete',
+    '[Host] service created',
+    '[Host] starting service',
+    '[Host] permission result: resultCode=-1',
     '[ROOT] Root access verified via su allowlist (uid=0)',
     '[NET] Hotspot active on 192.168.43.1:8887',
-    '[DISCOVERY] Broadcaster running on UDP 8889',
-    '[WS] Redmi Note 12 authenticated with secure token',
-    '[CODEC] MediaCodec H.264 stream active: 720p @ 30 FPS'
+    '[WS] Redmi Note 12 authenticated with secure token'
   ]);
 
   // Code files mapping for the project inspector

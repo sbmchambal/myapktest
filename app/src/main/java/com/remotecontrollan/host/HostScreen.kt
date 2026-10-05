@@ -72,6 +72,8 @@ fun HostScreen(
     deviceInfo: DeviceInfo,
     currentPin: String,
     connectedControllers: Int,
+    errorMessage: String? = null,
+    onDismissError: () -> Unit = {},
     onStartHostRequested: () -> Unit,
     onStopHostRequested: () -> Unit,
     onRegeneratePin: () -> Unit,
@@ -115,6 +117,39 @@ fun HostScreen(
                 .verticalScroll(scrollState)
                 .padding(16.dp)
         ) {
+            // Error banner if failure state is set
+            if (!errorMessage.isNullOrBlank()) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF450A0A)),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 14.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "SCREEN SHARE FAILED",
+                                color = Color(0xFFFCA5A5),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = errorMessage,
+                                color = Color.White,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(top = 2.dp)
+                            )
+                        }
+                        IconButton(onClick = onDismissError) {
+                            Icon(Icons.Default.Stop, contentDescription = "Dismiss", tint = Color(0xFFFCA5A5))
+                        }
+                    }
+                }
+            }
+
             // Main State Banner
             StatusBanner(isHostActive = isHostActive, connectedControllers = connectedControllers)
 

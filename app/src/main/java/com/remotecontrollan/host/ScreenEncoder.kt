@@ -26,41 +26,58 @@ class ScreenEncoder(
     fun prepare(profile: StreamProfile): Surface? {
         stop()
 
+        // Ensure width and height are even numbers (strictly required by H.264/AVC encoders)
+        val width = if (profile.width % 2 == 0) profile.width else profile.width - 1
+        val height = if (profile.height % 2 == 0) profile.height else profile.height - 1
+
         try {
-            val format = MediaFormat.createVideoFormat(
-                MediaFormat.MIMETYPE_VIDEO_AVC,
-                profile.width,
-                profile.height
-            ).apply {
-                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                setInteger(MediaFormat.KEY_BIT_RATE, profile.bitrateBps)
-                setInteger(MediaFormat.KEY_FRAME_RATE, profile.fps)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, profile.iFrameIntervalSeconds)
-                // Low latency flags
-                setInteger(MediaFormat.KEY_LATENCY, 0)
-                setInteger(MediaFormat.KEY_PRIORITY, 0)
-                try {
-                    setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
-                } catch (e: Exception) {
-                    // ignore if CBR unsupported
-                }
+            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            val primaryFormat = createVideoFormat(width, height, profile.fps, profile.bitrateBps, profile.iFrameIntervalSeconds, true)
+
+            try {
+                codec.configure(primaryFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            } catch (e: Exception) {
+                AppLogger.w("ScreenEncoder", "High-performance configure failed, falling back to standard baseline AVC: ${e.message}")
+                val fallbackFormat = createVideoFormat(width, height, profile.fps, profile.bitrateBps, profile.iFrameIntervalSeconds, false)
+                codec.configure(fallbackFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }
 
-            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             inputSurface = codec.createInputSurface()
             codec.start()
             mediaCodec = codec
             isEncoding = true
 
             startEncodingLoop()
-            AppLogger.i("ScreenEncoder", "MediaCodec started: ${profile.width}x${profile.height} @ ${profile.fps} FPS")
+            AppLogger.i("ScreenEncoder", "MediaCodec started: ${width}x${height} @ ${profile.fps} FPS")
             return inputSurface
         } catch (e: Exception) {
             AppLogger.e("ScreenEncoder", "Failed to start MediaCodec: ${e.message}", e)
             stop()
             return null
         }
+    }
+
+    private fun createVideoFormat(width: Int, height: Int, fps: Int, bitrate: Int, iFrameInterval: Int, advancedFlags: Boolean): MediaFormat {
+        val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
+        }
+        if (advancedFlags) {
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    format.setInteger(MediaFormat.KEY_LATENCY, 0)
+                }
+            } catch (ignored: Exception) {}
+            try {
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            } catch (ignored: Exception) {}
+            try {
+                format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            } catch (ignored: Exception) {}
+        }
+        return format
     }
 
     private fun startEncodingLoop() {
