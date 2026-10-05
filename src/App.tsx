@@ -107,11 +107,14 @@ class MainActivity : ComponentActivity() {
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
+        val resultCode = result.resultCode
+        val projectionData = result.data
+        if (resultCode == RESULT_OK && projectionData != null) {
+            HostService.setPendingProjectionData(resultCode, projectionData)
             val serviceIntent = Intent(this, HostService::class.java).apply {
                 action = HostService.ACTION_START
-                putExtra("EXTRA_RESULT_CODE", result.resultCode)
-                putExtra("EXTRA_DATA", result.data)
+                putExtra(HostService.EXTRA_RESULT_CODE, resultCode)
+                putExtra(HostService.EXTRA_DATA, projectionData)
             }
             startForegroundService(serviceIntent)
         }

@@ -71,15 +71,17 @@ class MainActivity : ComponentActivity() {
     private val screenCaptureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        AppLogger.i("Host", "[Host] permission result: resultCode=${result.resultCode}, data=${result.data}")
-        if (result.resultCode == RESULT_OK && result.data != null) {
+        val resultCode = result.resultCode
+        val projectionData = result.data
+        AppLogger.i("Host", "[Host] permission result: resultCode=$resultCode, data=$projectionData")
+        if (resultCode == RESULT_OK && projectionData != null) {
             // Store credentials in companion memory handoff for 100% reliability across Android 11/12/13/14/15
-            HostService.setPendingProjectionData(result.resultCode, result.data)
+            HostService.setPendingProjectionData(resultCode, projectionData)
 
             val serviceIntent = Intent(this, HostService::class.java).apply {
                 action = HostService.ACTION_START
-                putExtra(HostService.EXTRA_RESULT_CODE, result.resultCode)
-                putExtra(HostService.EXTRA_DATA, result.data)
+                putExtra(HostService.EXTRA_RESULT_CODE, resultCode)
+                putExtra(HostService.EXTRA_DATA, projectionData)
             }
             AppLogger.i("Host", "[Host] starting service")
             try {
@@ -90,7 +92,7 @@ class MainActivity : ComponentActivity() {
                 HostService.getInstance()?.setFailureState("Foreground service start failed: ${e.message}")
             }
         } else {
-            AppLogger.w("Host", "[Host] permission result: cancelled or failed (resultCode=${result.resultCode})")
+            AppLogger.w("Host", "[Host] permission result: cancelled or failed (resultCode=$resultCode)")
             Toast.makeText(this, "Screen capture permission was not granted", Toast.LENGTH_LONG).show()
         }
     }
