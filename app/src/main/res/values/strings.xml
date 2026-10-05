@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">RemoteControl LAN</string>
+    <string name="host_mode">Host Mode</string>
+    <string name="controller_mode">Controller Mode</string>
+    <string name="host_active">HOST ACTIVE</string>
+    <string name="stop_host">STOP HOST</string>
+    <string name="start_host">START HOST</string>
+    <string name="remote_hosts">REMOTE HOSTS</string>
+    <string name="connect">CONNECT</string>
+    <string name="pairing_title">Pairing Security</string>
+    <string name="accessibility_description">RemoteControl LAN Accessibility Service allows remote touch gestures and hardware key navigation on non-rooted devices.</string>
+</resources>

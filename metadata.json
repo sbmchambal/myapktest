@@ -1,0 +1,6 @@
+{
+  "name": "RemoteControl LAN - Android Kotlin & Jetpack Compose",
+  "description": "Production-quality native Android application for direct LAN & USB remote control between Android devices with MediaProjection, WebSocket, low-latency streaming, and root engine.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
